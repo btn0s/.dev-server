@@ -86,6 +86,7 @@ class GameState {
   roundPhase: ERoundPhase;
   players: PlayerState[];
   currentTimerDuration: number;
+  roundWinner?: PlayerState;
 
   constructor(rules: IGameRules) {
     console.log("Creating game state...");
@@ -183,8 +184,10 @@ export class GameMode {
     const roundWinner = this.checkRoundWinConditions();
     if (roundWinner) {
       roundWinner.roundsWon++;
+      this.getGameState().roundWinner = roundWinner;
       this.setRoundPhase(ERoundPhase.POST_PLAY);
     }
+    this.multiCastGameState();
   }
 
   /** State Transitions */
@@ -207,16 +210,17 @@ export class GameMode {
     this.getGameState().setMatchPhase(phase);
     switch (phase) {
       case EMatchPhase.LOBBY:
+        this.multiCastGameState();
         // Lobby logic, if any
         break;
       case EMatchPhase.PLAY:
         this.setRoundPhase(ERoundPhase.STARTING);
         break;
       case EMatchPhase.COMPLETE:
+        this.multiCastGameState();
         // Match completion logic
         break;
     }
-    this.multiCastGameState();
   }
   setRoundPhase(phase: ERoundPhase) {
     this.getGameState().setRoundPhase(phase);
@@ -261,7 +265,6 @@ export class GameMode {
         }
         break;
     }
-    this.multiCastGameState();
   }
 
   /** Timers & Utility */
