@@ -62,6 +62,18 @@ export interface IGameConfig {
   rules: IGameRules;
 }
 
+interface IGameState {
+  roomId: string;
+  rules: IGameRules;
+  matchPhase: EMatchPhase;
+  roundPhase: ERoundPhase;
+  players: PlayerState[];
+  currentTimerDuration: number;
+  roundWinner?: PlayerState;
+}
+
+type GameStateKeys = keyof IGameState;
+
 class PlayerState {
   id: string;
   roundScore: number;
@@ -81,34 +93,66 @@ class PlayerState {
 }
 
 class GameState {
-  rules: IGameRules;
-  matchPhase: EMatchPhase;
-  roundPhase: ERoundPhase;
-  players: PlayerState[];
-  currentTimerDuration: number;
-  roundWinner?: PlayerState;
+  state: IGameState;
+  lastSentState: IGameState | null = null;
 
-  constructor(rules: IGameRules) {
+  constructor(roomId: string, rules: IGameRules) {
     console.log("Creating game state...");
-
-    this.rules = rules;
-    this.matchPhase = EMatchPhase.LOBBY;
-    this.roundPhase = ERoundPhase.STARTING;
-    this.players = [];
-    this.currentTimerDuration = 0;
+    console.log("Room ID: ", roomId);
+    this.state = {
+      roomId,
+      rules,
+      matchPhase: EMatchPhase.LOBBY,
+      roundPhase: ERoundPhase.STARTING,
+      players: [],
+      currentTimerDuration: 0,
+    };
   }
 
   /** State getters */
   setMatchPhase(phase: EMatchPhase) {
-    this.matchPhase = phase;
+    this.state.matchPhase = phase;
   }
 
   setRoundPhase(phase: ERoundPhase) {
-    this.roundPhase = phase;
+    this.state.roundPhase = phase;
   }
 
   getPlayers() {
-    return this.players;
+    return this.state.players;
+  }
+
+  setState(state: Partial<IGameState>) {
+    this.state = {
+      ...this.state,
+      ...state,
+    };
+  }
+
+  calculateStateDelta(
+    lastSentState: IGameState | null,
+  ): Partial<IGameState> | null {
+    if (!lastSentState) {
+      return this.state; // Send full state if it's the first time
+    }
+
+    const delta: Partial<IGameState> = {};
+
+    for (const key in this.state) {
+      console.log("key: ", key);
+      if (
+        this.state[key as GameStateKeys] !== lastSentState[key as GameStateKeys]
+      ) {
+        console.log("key has been changed: ", key);
+        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+        // @ts-ignore
+        delta[key as GameStateKeys] = this.state[key as GameStateKeys];
+      }
+    }
+
+    console.log("delta: ", delta);
+
+    return Object.keys(delta).length > 0 ? delta : null;
   }
 }
 
@@ -117,11 +161,15 @@ export class GameMode {
   private readonly gameState: GameState;
   private currentTimer?: NodeJS.Timeout; // This will store the reference to the timer
 
-  constructor(gameSession: GameSession, rules: IGameRules = DEFAULT_RULES) {
+  constructor(
+    roomId: string,
+    gameSession: GameSession,
+    rules: IGameRules = DEFAULT_RULES,
+  ) {
     console.log(`Starting game mode...`);
 
     this.gameSession = gameSession;
-    this.gameState = new GameState(rules);
+    this.gameState = new GameState(roomId, rules);
 
     const server = this.gameSession.io;
 
@@ -142,7 +190,7 @@ export class GameMode {
   addPlayer(player: PlayerState) {
     if (
       this.getGameState().getPlayers().length <
-      this.getGameState().rules.maxPlayers
+      this.getGameState().state.rules.maxPlayers
     ) {
       this.getGameState().getPlayers().push(player);
     } else {
@@ -163,7 +211,9 @@ export class GameMode {
 
   /** Event Handlers */
   onPlayerReady(playerId: string) {
-    const player = this.getGameState().players.find((ps) => ps.id === playerId);
+    const player = this.getGameState().state.players.find(
+      (ps) => ps.id === playerId,
+    );
     if (!player) {
       console.log("Player not found");
       return;
@@ -173,7 +223,9 @@ export class GameMode {
     this.checkAllPlayersReady();
   }
   onPlayerScored(playerId: string) {
-    const player = this.getGameState().players.find((ps) => ps.id === playerId);
+    const player = this.getGameState()
+      .getPlayers()
+      .find((ps) => ps.id === playerId);
     if (!player) {
       console.log("Player not found");
       return;
@@ -184,7 +236,7 @@ export class GameMode {
     const roundWinner = this.checkRoundWinConditions();
     if (roundWinner) {
       roundWinner.roundsWon++;
-      this.getGameState().roundWinner = roundWinner;
+      this.getGameState().state.roundWinner = roundWinner;
       this.setRoundPhase(ERoundPhase.POST_PLAY);
     }
     this.multiCastGameState();
@@ -193,16 +245,16 @@ export class GameMode {
   /** State Transitions */
   checkAllPlayersReady() {
     const hasEnoughPlayers =
-      this.getGameState().players.length ===
-      this.getGameState().rules.minPlayers;
-    const isAllPlayersReady = this.getGameState().players.every(
-      (p) => p.isReady,
-    );
+      this.getGameState().getPlayers().length ===
+      this.getGameState().state.rules.minPlayers;
+    const isAllPlayersReady = this.getGameState()
+      .getPlayers()
+      .every((p) => p.isReady);
 
     if (hasEnoughPlayers && isAllPlayersReady) {
       this.startCountdown(
         () => this.setMatchPhase(EMatchPhase.PLAY),
-        this.getGameState().rules.timerDurations.lobby,
+        this.getGameState().state.rules.timerDurations.lobby,
       );
     }
   }
@@ -238,7 +290,7 @@ export class GameMode {
         // Start the countdown for actual gameplay
         this.startCountdown(
           () => this.setRoundPhase(ERoundPhase.PLAY),
-          this.getGameState().rules.timerDurations.round.prePlay,
+          this.getGameState().state.rules.timerDurations.round.prePlay,
         );
         break;
       case ERoundPhase.PLAY:
@@ -252,7 +304,7 @@ export class GameMode {
         // Show winner of the round and any relevant information (handled on client)
         this.startCountdown(
           () => this.setRoundPhase(ERoundPhase.ENDING),
-          this.getGameState().rules.timerDurations.round.postPlay,
+          this.getGameState().state.rules.timerDurations.round.postPlay,
         );
         break;
       case ERoundPhase.ENDING:
@@ -275,14 +327,14 @@ export class GameMode {
     }
 
     const countdownDuration =
-      duration || this.getGameState().rules.timerDurations.default;
-    this.getGameState().currentTimerDuration = countdownDuration / 1000;
+      duration || this.getGameState().state.rules.timerDurations.default;
+    this.getGameState().state.currentTimerDuration = countdownDuration / 1000;
 
     this.currentTimer = setInterval(() => {
-      this.getGameState().currentTimerDuration--;
+      this.getGameState().state.currentTimerDuration--;
       this.multiCastGameState();
 
-      if (this.getGameState().currentTimerDuration <= 0) {
+      if (this.getGameState().state.currentTimerDuration <= 0) {
         clearInterval(this.currentTimer);
         callback();
       }
@@ -294,7 +346,7 @@ export class GameMode {
       .getPlayers()
       .find(
         (player) =>
-          player.roundScore >= this.getGameState().rules.scoreToWinRound,
+          player.roundScore >= this.getGameState().state.rules.scoreToWinRound,
       );
   }
   checkMatchWinConditions(): boolean {
@@ -302,32 +354,45 @@ export class GameMode {
       .getPlayers()
       .some(
         (player) =>
-          player.roundsWon >= this.getGameState().rules.roundsToWinMatch,
+          player.roundsWon >= this.getGameState().state.rules.roundsToWinMatch,
       );
   }
   multiCastGameState() {
-    console.log("Sending game state to all players");
-    this.gameSession
-      .getRoom()
-      .emit(EGameEvent.UPDATE_GAME_STATE, this.getGameState());
+    const currentState = this.getGameState().state;
+    const stateDelta = this.getGameState().calculateStateDelta(
+      this.getGameState().lastSentState,
+    );
+
+    if (stateDelta) {
+      console.log("Sending game state delta to all players");
+      this.gameSession.getRoom().emit(EGameEvent.UPDATE_GAME_STATE, stateDelta);
+    } else {
+      console.log("No state changes detected. Not sending any updates.");
+    }
+
+    this.getGameState().setState(currentState);
   }
 }
 
 export class GameSession {
+  id: string;
   io: Server;
-  room: string = "";
+  roomId: string;
   gameMode: GameMode;
   sessionManager: GameSessionManager;
 
   constructor(
+    id: string,
     server: Server,
     gameModeRules: IGameRules,
     manager: GameSessionManager,
   ) {
     console.log("Starting game session...");
 
+    this.id = id;
     this.io = server;
-    this.gameMode = new GameMode(this, gameModeRules);
+    this.roomId = `gameSession-${id}`;
+    this.gameMode = new GameMode(this.roomId, this, gameModeRules);
     this.sessionManager = manager;
 
     // Handle socket connections
@@ -340,7 +405,7 @@ export class GameSession {
   }
 
   getRoom() {
-    return this.io.to(this.room);
+    return this.io.to(this.roomId);
   }
 
   /** Handle a new player connection */
@@ -348,14 +413,14 @@ export class GameSession {
     console.log(`Player connected: ${socket.id}`);
     console.log(`Session ID: ${socket.handshake.query["sessionId"]}`);
 
-    this.room = `gameSession-${socket.handshake.query["sessionId"]}`;
+    this.roomId = `gameSession-${socket.handshake.query["sessionId"]}`;
 
-    if (!this.room) {
+    if (!this.roomId) {
       console.log("No room specified");
       return;
     }
 
-    socket.join(this.room);
+    socket.join(this.roomId);
 
     const player = new PlayerState(socket.id);
     this.gameMode.addPlayer(player);
@@ -372,13 +437,14 @@ export class GameSession {
 
       if (player) {
         this.gameMode.removePlayer(player);
+        this.getGameMode().getGameState().state.matchPhase = EMatchPhase.LOBBY;
         this.getGameMode().multiCastGameState();
       }
     });
   }
 
   endSession() {
-    this.sessionManager.endSession(this.room);
+    this.sessionManager.endSession(this.roomId);
   }
 }
 
@@ -387,7 +453,7 @@ export class GameSessionManager {
 
   createSession(server: Server, gameModeRules: IGameRules): string {
     const sessionId = this.generateSessionId();
-    const session = new GameSession(server, gameModeRules, this);
+    const session = new GameSession(sessionId, server, gameModeRules, this);
     this.sessions.set(sessionId, session);
     console.log(`Created session ${sessionId}`);
     console.log(`Total sessions: ${this.sessions.size}`);

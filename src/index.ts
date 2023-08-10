@@ -47,7 +47,7 @@ gameConfigs.forEach((gameConfig: IGameConfig) => {
     const sessionId = req.params.sessionId;
     const session = gameSessionManager.getSession(sessionId);
     if (session) {
-      res.json({ session: session.getGameMode().getGameState() });
+      res.json({ gameState: session.getGameMode().getGameState() });
     } else {
       res.status(404).send(`Session ${sessionId} not found`);
     }
